@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using HarmonyLib;
 using KMod;
 using PeterHan.PLib.Core;
@@ -12,6 +13,56 @@ namespace SealedInsulatedDoor
             base.OnLoad(harmony);
             PUtil.InitLibrary();
             new POptions().RegisterOptions(this, typeof(ModSettings));
+        }
+    }
+
+    /// <summary>
+    /// 修补 vanilla 在 U59 遗留的一个 bug：Door.OVERRIDE_ANIMS 里含 null。
+    ///
+    /// U59 的 Door 静态构造器是：
+    ///     OVERRIDE_ANIMS = new KAnimFile[] { Assets.GetAnim("anim_use_remote_kanim") };
+    /// 但 "anim_use_remote_kanim" 这个动画在 U59 的资源表里已经不存在，
+    /// Assets.GetAnim 返回 null，于是 OVERRIDE_ANIMS[0] == null。
+    ///
+    /// Door.OnPrefabInit 会把它整体赋给 Workable.overrideAnims。
+    /// 之后复制人对这类门执行"开门/关门"工作时，StandardWorker.AttachOverrideAnims
+    /// 会把数组元素逐个传给 KAnimControllerBase.AddAnimOverrides，
+    /// 遇到 null 就 Debug.LogError("AddAnimOverrides tried to add a null override to ...").
+    ///
+    /// 本补丁在不改动游戏文件的前提下，把 null 元素剔除，避免日志刷屏与缺失工作动画。
+    /// 对该 mod 自己的门和其它所有 DoorType 门同样生效。
+    /// </summary>
+    [HarmonyPatch(typeof(Door), "OnPrefabInit")]
+    public static class Door_OnPrefabInit_Patch
+    {
+        public static void Postfix(Door __instance)
+        {
+            if (__instance == null) return;
+
+            KAnimFile[] anims = __instance.overrideAnims;
+            if (anims == null || anims.Length == 0) return;
+
+            List<KAnimFile> clean = null;
+            for (int i = 0; i < anims.Length; i++)
+            {
+                if (anims[i] == null)
+                {
+                    if (clean == null)
+                    {
+                        clean = new List<KAnimFile>(anims.Length);
+                        for (int j = 0; j < i; j++) clean.Add(anims[j]);
+                    }
+                }
+                else if (clean != null)
+                {
+                    clean.Add(anims[i]);
+                }
+            }
+
+            // 没有 null 就不必改动，避免无谓的数组分配。
+            if (clean == null) return;
+
+            __instance.overrideAnims = clean.Count == 0 ? null : clean.ToArray();
         }
     }
 
